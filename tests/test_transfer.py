@@ -25,6 +25,11 @@ def receiver():
             self.end_headers()
 
         def authorized(self):
+            if self.path == "/redirect-target":
+                state["redirect_hits"] = state.get("redirect_hits", 0) + 1
+            elif state.get("redirect_method") == self.command:
+                self.respond(307, {"Location": "/redirect-target"})
+                return False
             if self.headers.get("x-signature") != state["token"]:
                 self.respond(401)
                 return False
@@ -98,6 +103,24 @@ def test_transfer_chunks_and_completed_rerun_do_not_reupload(tmp_path, receiver,
     assert cli.transfer(file, session) == result
     assert state["creates"] == 1
     assert "temporary-secret" not in capsys.readouterr().err
+    assert cli.transfer(file, session, restart=True) == result
+    assert state["creates"] == 2
+    assert bytes(state["data"]) == content
+
+
+@pytest.mark.parametrize("method", ["POST", "PATCH", "HEAD"])
+def test_redirects_never_forward_credentials_or_bytes(tmp_path, receiver, method):
+    endpoint, state = receiver
+    file, session, _, _ = prepare(tmp_path, endpoint)
+    if method == "HEAD":
+        state["fail_after"] = cli.CHUNK_SIZE
+        with pytest.raises(cli.UploadError):
+            cli.transfer(file, session)
+        state["fail_after"] = None
+    state["redirect_method"] = method
+    with pytest.raises(cli.UploadError, match="not forwarded"):
+        cli.transfer(file, session)
+    assert state.get("redirect_hits", 0) == 0
 
 
 def test_renew_credentials_resumes_without_retransmitting(tmp_path, receiver):

@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import os
 import stat
+import subprocess
 import sys
 import tempfile
 import time
 from pathlib import Path
+from unittest.mock import patch
 from urllib.parse import urlsplit
 
 import requests
@@ -28,11 +31,24 @@ class UploadError(Exception):
         self.code = code
 
 
+def _private_windows_file(path: Path) -> None:
+    identity = subprocess.check_output(
+        ["whoami", "/user", "/fo", "csv", "/nh"], text=True, stderr=subprocess.DEVNULL,
+    )
+    sid = next(csv.reader(identity.splitlines()))[1]
+    subprocess.run(
+        ["icacls", str(path), "/inheritance:r", "/grant:r", f"*{sid}:(F)"],
+        check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+
+
 def _private_json(path: Path, value: dict) -> None:
     """Replace state atomically without temporarily making it world-readable."""
     descriptor, temporary = tempfile.mkstemp(dir=path.parent, prefix=".upload-")
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8") as output:
+            if os.name == "nt":
+                _private_windows_file(Path(temporary))
             json.dump(value, output)
             output.flush()
             os.fsync(output.fileno())
@@ -93,6 +109,24 @@ def _network_error(error: Exception) -> UploadError | None:
 
 
 def transfer(file: Path, session_file: Path, *, restart: bool = False) -> dict:
+    # tuspy 1.1 has no request-options hook. Scope this adapter to the single CLI
+    # transfer so every library request refuses redirects and has a network timeout.
+    request = requests.Session.request
+
+    def scoped_request(session, method, url, **kwargs):
+        kwargs.update(allow_redirects=False, timeout=(10, 120))
+        response = request(session, method, url, **kwargs)
+        if 300 <= response.status_code < 400:
+            response.close()
+            raise UploadError("redirect_refused", "Storage redirected the upload. Request a "
+                              "fresh session; credentials and file bytes were not forwarded.")
+        return response
+
+    with patch.object(requests.Session, "request", scoped_request):
+        return _transfer(file, session_file, restart=restart)
+
+
+def _transfer(file: Path, session_file: Path, *, restart: bool) -> dict:
     file = file.resolve(strict=True)
     session = _read_private_json(session_file)
     reference = session["uploadReference"]
@@ -111,7 +145,7 @@ def transfer(file: Path, session_file: Path, *, restart: bool = False) -> dict:
             raise UploadError("file_changed", "The file or upload identity changed. Do not resume "
                               "this transfer; begin a new upload with a new filename.")
         _check_url(state["url"], endpoint)
-        if state.get("complete"):
+        if state.get("complete") and not restart:
             return {"status": "uploaded", "uploadReference": reference,
                     "sizeBytes": identity["size"],
                     "nextAction": "finalize_upload"}

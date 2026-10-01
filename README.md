@@ -12,6 +12,7 @@ for macOS, Linux, or Windows if `uvx` is unavailable.
 Request an upload session from the service that will receive the file. Save its `session`
 object as a private JSON file outside source control. On macOS/Linux restrict access with
 `chmod 600 /absolute/path/session.json`; on Windows use an owner-only directory/ACL.
+On Windows the helper also restricts newly written state-file ACLs to the current user.
 
 ```sh
 uvx arch-upload@0.1.0 --file "/absolute/path/data.csv" --session "/absolute/path/session.json"
@@ -20,6 +21,7 @@ uvx arch-upload@0.1.0 --file "/absolute/path/data.csv" --session "/absolute/path
 The session contains `uploadReference`, `sizeBytes`, `endpoint`, `token`, and a `metadata`
 object for TUS creation. The helper uses the token only in the `x-signature` header. No
 permanent account/API credentials are required. Never put session contents into logs or Git.
+HTTP redirects are refused so neither the token nor file bytes are forwarded to another host.
 
 The helper sends 6 MiB chunks, writes progress to stderr, and emits a JSON result on stdout.
 Exit 0 means the transfer finished. The receiving service must still finalize/register it.

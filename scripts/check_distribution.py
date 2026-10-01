@@ -1,14 +1,16 @@
 """Fail if a release accidentally packages anything beyond the public helper."""
 
 import tarfile
+import tomllib
 import zipfile
 from pathlib import Path
 
 wheel, = Path("dist").glob("*.whl")
+version = tomllib.loads(Path("pyproject.toml").read_text())["project"]["version"]
 assert wheel.stat().st_size < 100 * 1024, "Helper wheel exceeded 100 KiB"
 with zipfile.ZipFile(wheel) as archive:
     for name in archive.namelist():
-        assert name.startswith(("arch_upload/", "arch_upload-0.1.0.dist-info/")), name
+        assert name.startswith(("arch_upload/", f"arch_upload-{version}.dist-info/")), name
         assert "__pycache__" not in name, name
 sdist, = Path("dist").glob("*.tar.gz")
 with tarfile.open(sdist) as archive:
